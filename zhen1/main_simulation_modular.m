@@ -4,25 +4,13 @@ clear; close all; clc;
 %% 添加模块路径
 addpath(pwd);
 
-
 N = 6;                           % 追随者数量
 tspan = [0, 20];                % 仿真时间 (调整为20秒)
-use_true_leader = false;         % 控0制模式选择：false=使用观测器指导跟踪，true=使用真实领导者状态
+use_true_leader = false;         % 控制模式选择：false=使用观测器指导跟踪，true=使用真实领导者状态
 
 % ODE求解器配置
-solver_type = 'ode45';         % 固定使用ode45求解器
-adaptive_tolerance = true;      % 自适应容差
-rel_tol_default = 1e-6;        % 默认相对容差
-abs_tol_default = 1e-8;        % 默认绝对容差
-rel_tol_fine = 1e-8;           % 精细相对容差
-abs_tol_fine = 1e-10;          % 精细绝对容差
-
-% 精细求解区间 (调整为20秒时间范围内)
 observer_restart_time = 6.5;    % 观测器重启时间
-observer_period = 1;          % 观测器周期
-fine_region_offset = 2;       % 精细区间偏移
-fine_start = observer_restart_time + observer_period - fine_region_offset;  % -1s
-fine_end = observer_restart_time + observer_period + fine_region_offset;    % 3s
+observer_period = 1;            % 观测器周期
 
 A = [
     0 0 1 1 0 1;  % 节点1的连接
@@ -156,15 +144,12 @@ fprintf('最小段长: %.3f, MaxStep约束: %.6f\n', min_segment_length, max_ste
 abstol_vec = repmat([1e-6; 1e-6], 13, 1);  % 13个2维子系统（1领导者+6追随者+6观测器）
 options_adaptive = odeset('RelTol', 1e-3, 'AbsTol', abstol_vec, ...
                          'MaxStep', max_step_constraint);
-options_stiff_adaptive = odeset('RelTol', 1e-3, 'AbsTol', abstol_vec, ...
-                               'MaxStep', max_step_constraint);
 
 % 3) 逐段积分，自动切换求解器
 t_all = [];
 x_all = [];
 x0k = x0;
 solver_switches = 0;
-total_failed_steps = 0;
 
 for k = 1:length(T)-1
     segment_interval = [T(k), T(k+1)];
@@ -216,7 +201,6 @@ fprintf('\n系统性分段ODE求解完成！\n');
 fprintf('总用时: %.2f 秒\n', solve_time);
 fprintf('总时间点数: %d\n', length(t_all));
 fprintf('求解器切换次数: %d\n', solver_switches);
-fprintf('失败步数统计: %d\n', total_failed_steps);
 
 %% 后处理和分析
 fprintf('\n开始后处理...\n');
@@ -229,8 +213,6 @@ xhat_leader = reshape(x_all(:, 3+2*N:end)', 2, N, length(t));
 
 % 计算派生量
 attack_modes = zeros(length(t), 1);
-connectivity_scores = zeros(length(t), 1);
-observer_modes = zeros(length(t), 1);
 observer_errors = zeros(2*N, length(t));
 observer_gains_history = zeros(2*N, length(t));  % 记录观测器增益历史
 
@@ -240,15 +222,7 @@ for k = 1:length(t)
     % 使用攻击网络模块
     [A_t, B_t, attack_mode, attack_info] = attack_network_module(current_t, N, topology_config, attack_config);
     attack_modes(k) = attack_mode;
-    connectivity_scores(k) = attack_info.connectivity_score;
-    
-    % 观测器模式
-    if current_t < observer_restart_time
-        observer_modes(k) = 1; % 第一周期
-    elseif current_t < observer_restart_time + observer_period
-        observer_modes(k) = 2; % 第二周期
-    end
-    
+
     % 观测误差和增益计算
     xl = x_leader(:, k);
     xhat_l = xhat_leader(:, :, k);
@@ -355,7 +329,7 @@ fprintf('平均跟踪误差: %.6f\n', mean_tracking_error);
 %% 可视化和分析结果
 fprintf('\n生成分析图表...\n');
 simple_plot_module(t, x_leader, x_followers, xhat_leader, observer_errors, ...
-                   attack_modes, observer_modes, connectivity_scores, N);
+                   attack_modes, N);
 
 fprintf('\n=== 仿真完成 ===\n');
 
@@ -634,144 +608,93 @@ end
 
 function control_gain_segments = create_custom_control_gain_segments()
     % 创建自定义分段控制器增益配置
-    %
-    % 输出:
-    %   control_gain_segments: 分段控制器增益配置结构体
-    
     control_gain_segments = struct();
-    
-    % 默认控制增益（用于未定义时间段）
-    control_gain_segments.default_follower_gains = [958,295];
+    control_gain_segments.default_follower_gains = [958, 295];
     control_gain_segments.default_coupling_gain = 1.0;
     control_gain_segments.default_consensus_gain = 1.0;
-    
-    % 定义分段控制增益配置 - 七段设计
-    % 每个分段包含：开始时间、结束时间、追随者增益、耦合增益、一致性增益
-    segments = [];
-    
+
+    segments = repmat(struct(), 1, 7);
+
     % 第一段：0-1秒 - 控制增益为0
     segments(1).start_time = 0;
     segments(1).end_time = 1;
-    segments(1).follower_gains = [0,0];     % 控制增益
+    segments(1).follower_gains = [0, 0];
     segments(1).coupling_gain = 0;
     segments(1).consensus_gain = 0;
     segments(1).description = '第一段：0-1秒 - 控制增益为0';
-    
-    % 第二段：1-2秒 - 初始化阶段，使用单调递增增益函数
-    
+
+    % 第二段：1-2.5秒 - 初始化阶段，增益线性上升至目标值
     segments(2).start_time = 1;
     segments(2).end_time = 2.5;
-    % 定义单调递增的增益函数：从低增益平滑过渡到中等增益
-segments(2).start_time = 1;
-segments(2).end_time   = 2.5;
-
-% —— 设计参数 ——
-tau  = 1.5;      % 达到最大值并开始平台的位置
-T    = 0.5;      % 平台持续时间：tau 到 tau+T（例：1.5 到 1.8）
-epsv = 1e-12;    % 数值保护，避免分母为 0
-
-% 上升段形状（幂指数越大，靠近 tau 上升越陡）
-a1 = 3;          % K1 幂指数
-a2 = 2;          % K2 幂指数
-
-% 平台上限（最大值），需满足 M1 >= 958, M2 >= 295
-M1 = 1e3;        % K1 上限（最大值）
-M2 = 1e2;        % K2 上限（最大值）
-
-% 在 t=2 的目标值
-Y1 = 958;
-Y2 = 295;
-
-% 便捷记号
-t1 = tau + T;    % 平台结束时刻（例：1.8）
-t2 = 2.0;        % 目标约束时刻
-
-% 光滑过渡函数：smoothstep(s)=3s^2-2s^3，s∈[0,1]
-smoothstep = @(s) (3*s.^2 - 2*s.^3);
-
-segments(2).follower_gain_fun = @(t) [
-    % ---------- K1 ----------
-    ( min( ((tau-1+epsv).^a1) ./ (tau - t + epsv).^a1, M1 ) ) .* (t < tau) ...             % 单调上升到上限
-  + ( M1 )                                         .* (t >= tau  & t < t1) ...              % 平台：保持最大值
-  + ( (1 - smoothstep( max(0,min(1,(t - t1)/(t2 - t1))) )) .* M1 ...
-    +      smoothstep( max(0,min(1,(t - t1)/(t2 - t1))) )  .* Y1 ) .* (t >= t1 & t < t2) ...% 平滑衰减至 t=2 的目标值
-  + ( Y1 )                                         .* (t >= t2) ;                           % t≥2 保持目标值
-
-    % ---------- K2 ----------
-    ( min( ((tau-1+epsv).^a2) ./ (tau - t + epsv).^a2, M2 ) ) .* (t < tau) ...
-  + ( M2 )                                         .* (t >= tau  & t < t1) ...
-  + ( (1 - smoothstep( max(0,min(1,(t - t1)/(t2 - t1))) )) .* M2 ...
-    +      smoothstep( max(0,min(1,(t - t1)/(t2 - t1))) )  .* Y2 ) .* (t >= t1 & t < t2) ...
-  + ( Y2 )                                         .* (t >= t2)
-];
-
-segments(2).coupling_gain   = 1;
-segments(2).consensus_gain  = 1;
-segments(2).description     = '第二段：t∈[1,2.5]；t=1.5 达到上限并平台，t=2.0 过渡至 [958,295]';
-
-
+    segments(2).follower_gain_fun = @(time) ramp_follower_gains(time, [1, 2], [958, 295]);
     segments(2).coupling_gain = 1;
     segments(2).consensus_gain = 1;
-    segments(2).description = '第二段：1-2秒 - 初始化阶段 - 单调递增增益';
-    
-    % 第三段：5-6.5秒 - Y2攻击期间，提高增益
+    segments(2).description = '第二段：1-2.5秒 - 线性增益上升';
+
+    % 第三段：2.5-6.5秒 - Y2攻击期间，提高增益
     segments(3).start_time = 2.5;
     segments(3).end_time = 6.5;
-    segments(3).follower_gains = [958,295];    % 提高增益应对Y2攻击
+    segments(3).follower_gains = [958, 295];
     segments(3).coupling_gain = 1;
     segments(3).consensus_gain = 1;
-    segments(3).description = '第三段：5-6.5秒 - Y2攻击期间 - 高增益';
- 
+    segments(3).description = '第三段：2.5-6.5秒 - Y2攻击期间';
+
     % 第四段：6.5-7.5秒 - 恢复阶段，节点1使用特殊控制增益
     segments(4).start_time = 6.5;
     segments(4).end_time = 7.5;
-    segments(4).follower_gains = [280, 120];     % 其他节点的标准控制增益
+    segments(4).follower_gains = [280, 120];
     segments(4).coupling_gain = 1;
     segments(4).consensus_gain = 1;
-    segments(4).description = '第四段：6.5-7.5秒 - 恢复阶段，节点1使用特殊控制增益';
-    
-    % 为节点1在恢复阶段设置特殊控制增益
-    segments(4).node_specific_control_gains.node_1.follower_gains = [280, 120];  % 节点1特殊控制增益
-    segments(4).node_specific_control_gains.node_1.coupling_gain = 1;          % 降低耦合增益
-    segments(4).node_specific_control_gains.node_1.consensus_gain = 0;         % 降低一致性增益
-    
-    % 第五段：7.5-9秒 - 正常运行阶段
+    segments(4).description = '第四段：6.5-7.5秒 - 恢复阶段';
+    segments(4).node_specific_control_gains.node_1.follower_gains = [280, 120];
+    segments(4).node_specific_control_gains.node_1.coupling_gain = 1;
+    segments(4).node_specific_control_gains.node_1.consensus_gain = 0;
+
+    % 第五段：7.5-10.5秒 - 正常运行阶段
     segments(5).start_time = 7.5;
     segments(5).end_time = 10.5;
-    segments(5).follower_gains =  [958,295];    % 中等增益
+    segments(5).follower_gains = [958, 295];
     segments(5).coupling_gain = 1;
     segments(5).consensus_gain = 1;
-    segments(5).description = '第五段：7.5-8.5秒 - 正常运行阶段 - 中等增益';
-    
-    % 第六段：8.5-12秒 - Y1攻击期间，最高增益
-    segments(6).start_time = 8.5;
+    segments(5).description = '第五段：7.5-10.5秒 - 正常运行阶段';
+
+    % 第六段：10.5-12秒 - Y1攻击期间，保持高增益
+    segments(6).start_time = 10.5;
     segments(6).end_time = 12;
-    segments(6).follower_gains = [958,295];    % 高增益应对Y1攻击
+    segments(6).follower_gains = [958, 295];
     segments(6).coupling_gain = 1;
     segments(6).consensus_gain = 1;
-    segments(6).description = '第六段：8.5-12秒 - Y1攻击期间 - 最高增益';
-    
+    segments(6).description = '第六段：10.5-12秒 - Y1攻击期间';
+
     % 第七段：12-20秒 - 最终稳定阶段
     segments(7).start_time = 12;
     segments(7).end_time = 20;
-    segments(7).follower_gains = [958,290];   % 恢复到标准增益
+    segments(7).follower_gains = [958, 290];
     segments(7).coupling_gain = 1.0;
     segments(7).consensus_gain = 1.0;
-    segments(7).description = '第七段：12-20秒 - 最终稳定阶段 - 标准增益';
-    
+    segments(7).description = '第七段：12-20秒 - 最终稳定阶段';
+
     control_gain_segments.segments = segments;
-    
+
     % 导出时间栅格用于分段积分
-    control_gain_segments.time_grid = [];
-    for i = 1:length(segments)
-        control_gain_segments.time_grid = [control_gain_segments.time_grid, segments(i).start_time, segments(i).end_time];
-    end
-    control_gain_segments.time_grid = unique(control_gain_segments.time_grid);
-    
-    % 添加调试信息
-    control_gain_segments.num_segments = length(segments);
+    time_points = arrayfun(@(s) [s.start_time, s.end_time], segments, 'UniformOutput', false);
+    control_gain_segments.time_grid = unique([time_points{:}]);
+
+    % 调试信息
+    control_gain_segments.num_segments = numel(segments);
     control_gain_segments.total_time_span = [0, 20];
     control_gain_segments.description = '自定义分段控制器增益配置';
 end
 
+function gains = ramp_follower_gains(t, interval, target_gains)
+    % 在线性区间内从零增益平滑过渡到目标增益
+    if t <= interval(1)
+        alpha = 0;
+    elseif t >= interval(2)
+        alpha = 1;
+    else
+        alpha = (t - interval(1)) / (interval(2) - interval(1));
+    end
 
+    gains = alpha * target_gains;
+end
