@@ -2,7 +2,7 @@
 % 只生成4个独立图：观测器误差（角度）、观测器误差（角速度）、跟踪误差（角度）、跟踪误差（角速度）
 
 function simple_plot_module(t, x_leader, x_followers, xhat_leader, observer_errors, ...
-                            attack_modes, observer_modes, connectivity_scores, N)
+                            attack_modes, N)
     % 简化的可视化函数 - 4个独立图片
     %
     % 输入:
@@ -12,13 +12,10 @@ function simple_plot_module(t, x_leader, x_followers, xhat_leader, observer_erro
     %   xhat_leader: 观测器状态 [2 x N x length(t)]
     %   observer_errors: 观测器误差 [2*N x length(t)]
     %   attack_modes: 攻击模式向量
-    %   observer_modes: 观测器模式向量
-    %   connectivity_scores: 连通性分数向量
     %   N: 追随者数量
-    
+
     % 定义颜色方案
     colors = generate_color_scheme(N);
-    attack_colors = struct('normal', [0.9 0.9 0.9], 'Y1', [1 1 0], 'Y2', [1 0 0]);
     
     % 计算跟踪误差（追随者相对于领导者的误差）
     tracking_errors = compute_tracking_errors(x_leader, x_followers, t, N);
@@ -33,7 +30,7 @@ function simple_plot_module(t, x_leader, x_followers, xhat_leader, observer_erro
     
     % 子图1：观测器误差 - 状态1（角度）
     subplot(2, 1, 1);
-    plot_handles1 = plot_observer_errors_state(t, observer_errors, 1, N, colors, attack_regions);
+    plot_observer_errors_state(t, observer_errors, 1, N, colors, attack_regions);
     grid on;
     grid minor;
     set(gca, 'GridAlpha', 0.3, 'MinorGridAlpha', 0.1);  % 设置网格透明度，使网格更稀疏
@@ -60,7 +57,7 @@ function simple_plot_module(t, x_leader, x_followers, xhat_leader, observer_erro
     
     % 子图1：跟踪误差 - 状态1（角度）
     subplot(2, 1, 1);
-    plot_handles1 = plot_tracking_errors_state(t, tracking_errors, 1, N, colors, attack_regions);
+    plot_tracking_errors_state(t, tracking_errors, 1, N, colors, attack_regions);
     grid on;
     grid minor;
     set(gca, 'GridAlpha', 0.3, 'MinorGridAlpha', 0.1);  % 设置网格透明度，使网格更稀疏

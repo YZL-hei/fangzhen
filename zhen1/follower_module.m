@@ -173,38 +173,6 @@ function dx_follower = compute_follower_dynamics(x_follower, u_follower, params,
     dx_follower(2) = I_i^(-1) * (-m_i * g * l_i * sin(p_i) - C_i * v_i + h_i + tau_i);  % v_i = I_i^(-1)(-m_i*g*l_i*sin(p_i) - C_i*v_i + h_i(t) + τ_i)
 end
 
-function V_followers = distributed_follower_control(x_follower, neighbor_estimates, leader_estimate, gains, coupling_gain, consensus_gain, varargin)
-    % 兼容接口：此函数未在本模块主流程中调用，保留以避免外部依赖报错
-    p = inputParser;
-    addParameter(p, 'use_true_leader', false, @islogical);
-    addParameter(p, 'true_leader_state', [], @isnumeric);
-    parse(p, varargin{:});
-
-    % 跟踪控制 + 一致性（与 compute_follower_control 一致的思想）
-    K1 = gains(1); K2 = gains(2); K3 = gains(3);
-    x1 = x_follower(1); x2 = x_follower(2); x3 = x_follower(3);
-    
-    % 确定参考状态
-    if p.Results.use_true_leader && ~isempty(p.Results.true_leader_state)
-        reference = p.Results.true_leader_state;
-    else
-        reference = leader_estimate;
-    end
-    
-    % 跟踪控制（负反馈）
-    ref1 = reference(1); ref2 = reference(2); ref3 = reference(3);
-    tracking_error = [ref1 - x1; ref2 - x2; ref3 - x3];
-    tracking_control = (K1*tracking_error(1) + K2*tracking_error(2) + K3*tracking_error(3));
-
-    consensus_control = 0;
-    if size(neighbor_estimates, 2) > 0
-        neighbor_avg = mean(neighbor_estimates(1, :));
-        consensus_control = consensus_gain * (neighbor_avg - leader_estimate(1));
-    end
-
-    V_followers = coupling_gain * tracking_control + consensus_control;
-end
-
 function follower_params = create_default_follower_params(N)
     % 默认参数：倒立摆模型参数（论文中的数值）
     follower_params = struct();
@@ -225,25 +193,3 @@ function follower_params = create_default_follower_params(N)
         % 运行时写入
         follower_params(i).t = 0.0;
     end
-end
-
-function saturated_output = apply_saturation(input_signal, saturation_limit)
-    % 饱和函数：将输入信号限制在 [-saturation_limit, +saturation_limit] 范围内
-    %
-    % 输入:
-    %   input_signal: 待饱和处理的输入信号
-    %   saturation_limit: 饱和限制值（正数）
-    %
-    % 输出:
-    %   saturated_output: 经过饱和处理的输出信号
-    
-    if input_signal > saturation_limit
-        saturated_output = saturation_limit;
-    elseif input_signal < -saturation_limit
-        saturated_output = -saturation_limit;
-    else
-        saturated_output = input_signal;
-    end
-end
-
-
